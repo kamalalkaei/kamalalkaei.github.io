@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Texture Ripper — Perspective Extractor</title>
+<style>
+  :root{
+    --accent:#0b84ff;
+    --bg:#0f1720;
+    --panel:#0b1220;
+    --muted:#8b98a8;
+    --white:#e6eef6;
+  }
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+  body{background:linear-gradient(180deg,#071027 0%, #06111a 100%);color:var(--white);display:flex;flex-direction:column;gap:10px;padding:12px;box-sizing:border-box}
+  header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  h1{font-size:18px;margin:0}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  input[type=file]{display:inline-block}
+  label{font-size:13px;color:var(--muted)}
+  button{background:var(--accent);color:white;border:0;padding:8px 10px;border-radius:8px;font-weight:600}
+  .panel{display:flex;gap:12px;align-items:flex-start;}
+  .canvas-wrap{background:var(--panel);padding:8px;border-radius:10px;flex:1;min-width:240px;max-width:100%;box-shadow:0 6px 18px rgba(3,6,12,0.6)}
+  canvas{display:block;max-width:100%;height:auto;border-radius:6px;background:#07121a;touch-action:none}
+  .sidebar{width:300px;min-width:220px;max-width:40vw;background:linear-gradient(180deg,#071a2a, #06121a);padding:12px;border-radius:10px}
+  .row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .muted{color:var(--muted);font-size:13px}
+  input[type=number]{width:92px;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:var(--white)}
+  .help{font-size:13px;color:var(--muted);line-height:1.35}
+  .point{width:14px;height:14px;border-radius:50%;background:var(--accent);border:3px solid white;box-shadow:0 3px 8px rgba(11,132,255,0.25);position:absolute;transform:translate(-50%,-50%);touch-action:none}
+  .small{font-size:13px}
+  footer{font-size:12px;color:var(--muted);margin-top:6px}
+  .checkbox-row {display: flex; align-items: center; gap: 8px; margin-bottom: 8px;}
+  .checkbox-row input[type=checkbox] {margin: 0;}
+  @media (max-width:900px){
+    .panel{flex-direction:column}
+    .sidebar{width:100%}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Texture Ripper — perspective extractor</h1>
+  <div class="controls">
+    <input id="file" type="file" accept="image/*">
+    <button id="resetBtn">Reset points</button>
+    <button id="fitBtn">Fit to image</button>
+  </div>
+</header>
+
+<div class="panel">
+  <div class="canvas-wrap" id="canvasWrap">
+    <canvas id="mainCanvas" width="1200" height="800"></canvas>
+  </div>
+
+  <aside class="sidebar">
+    <div class="checkbox-row">
+      <input type="checkbox" id="autoDimensions" checked>
+      <label for="autoDimensions" class="small">Auto-calculate dimensions</label>
+    </div>
+    <div class="row">
+      <label class="small">Output width</label>
+      <input id="outW" type="number" min="1" value="1024">
+    </div>
+    <div class="row">
+      <label class="small">Output height</label>
+      <input id="outH" type="number" min="1" value="1024">
+    </div>
+    <div class="row">
+      <button id="extractBtn">Extract & Save PNG</button>
+      <button id="previewBtn">Preview</button>
+    </div>
+
+    <div style="height:10px"></div>
+    <div class="help">
+      <strong>How to use</strong>
+      <ol style="padding-left:18px;margin-top:6px" class="muted">
+        <li>Load an image (file or drag & drop onto canvas).</li>
+        <li>Tap/click the 4 corner handles and drag them to the corners of the texture you want.</li>
+        <li>Use <em>Output width/height</em> and press <strong>Extract & Save PNG</strong>.</li>
+      </ol>
+      <p class="muted">Handles work with mouse & touch. Points order: top-left, top-right, bottom-right, bottom-left (for display only — you may reposition them freely).</p>
+    </div>
+  </aside>
+</div>
+
+<footer>Simple perspective-correct quad → rectangle extractor. No frills — just what you asked for.</footer>
+
+<script>
+/*
+  Texture Ripper (single-file)
+  - Load image
+  - 4 draggable points (mouse & touch)
+  - Compute homography from quad -> rectangle
+  - Inverse-map destination pixels -> sample source (bilinear)
+  - Save as PNG
+*/
+
+// ---- UI elements
+const fileInput = document.getElementById('file');
+const mainCanvas = document.getElementById('mainCanvas');
+const canvasWrap = document.getElementById('canvasWrap');
+const ctx = mainCanvas.getContext('2d', { alpha: false });
+const resetBtn = document.getElementById('resetBtn');
+const fitBtn = document.getElementById('fitBtn');
+const extractBtn = document.getElementById('extractBtn');
+const previewBtn = document.getElementById('previewBtn');
+const outWInput = document.getElementById('outW');
+const outHInput = document.getElementById('outH');
+const autoDimensionsCheckbox = document.getElementById('autoDimensions');
+
+let image = new Image();
+let imgLoaded = false;
+
+// Points as objects {x,y,el}
+let points = [];
+let dragging = null;
+let dragOffset = {x:0,y:0};
+
+// canvas display size vs internal pixel size
+function resizeCanvasToWrap(){
+  // keep canvas size matching wrapper CSS width while preserving internal pixel buffer relative to image
+  // We'll keep the internal canvas size matching displayed size for simpler touch handling.
+  const rect = canvasWrap.getBoundingClientRect();
+  // set canvas CSS display size via width attribute (actual pixel buffer)
+  const dpr = window.devicePixelRatio || 1;
+  const displayW = Math.max(320, Math.floor(rect.width - 16)); // padding considered
+  const displayH = Math.max(240, Math.floor(window.innerHeight * 0.55));
+  mainCanvas.width = Math.floor(displayW * dpr);
+  mainCanvas.height = Math.floor(displayH * dpr);
+  mainCanvas.style.width = displayW + 'px';
+  mainCanvas.style.height = displayH + 'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', () => { resizeCanvasToWrap(); render(); });
+resizeCanvasToWrap();
+
+// create point handles overlay (positioned absolutely within canvasWrap)
+function makeHandle(i){
+  const el = document.createElement('div');
+  el.className = 'point';
+  el.style.zIndex = 999;
+  el.dataset.idx = i;
+  canvasWrap.appendChild(el);
+  return el;
+}
+
+// Initialize 4 points (they persist across images)
+function ensurePoints(){
+  if(points.length === 0){
+    for(let i=0;i<4;i++){
+      const el = makeHandle(i);
+      const p = {x: 60 + i*80, y: 60 + (i%2)*120, el};
+      points.push(p);
+      attachPointerHandlers(el, p);
+    }
+  }
+}
+ensurePoints();
+
+// pointer handlers (mouse & touch unified)
+function attachPointerHandlers(el, p){
+  function startPointer(evt){
+    evt.preventDefault();
+    const pt = getCanvasRelativePoint(extractPointerCoords(evt));
+    dragging = p;
+    dragOffset.x = pt.x - p.x;
+    dragOffset.y = pt.y - p.y;
+    // highlight
+    el.style.boxShadow = '0 6px 20px rgba(11,132,255,0.45)';
+  }
+  function movePointer(evt){
+    if(!dragging) return;
+    evt.preventDefault();
+    const pt = getCanvasRelativePoint(extractPointerCoords(evt));
+    dragging.x = pt.x - dragOffset.x;
+    dragging.y = pt.y - dragOffset.y;
+    clampPointToCanvas(dragging);
+    render();
+    // Auto-update dimensions if enabled
+    if(autoDimensionsCheckbox.checked) {
+      updateOutputDimensions();
+    }
+  }
+  function endPointer(evt){
+    if(!dragging) return;
+    dragging.el.style.boxShadow = '';
+    dragging = null;
+  }
+
+  // mouse
+  el.addEventListener('mousedown', startPointer);
+  window.addEventListener('mousemove', movePointer);
+  window.addEventListener('mouseup', endPointer);
+  // touch
+  el.addEventListener('touchstart', startPointer, {passive:false});
+  window.addEventListener('touchmove', movePointer, {passive:false});
+  window.addEventListener('touchend', endPointer);
+}
+
+function extractPointerCoords(evt){
+  if(evt.touches && evt.touches[0]) return {x: evt.touches[0].clientX, y: evt.touches[0].clientY};
+  if(evt.clientX !== undefined) return {x: evt.clientX, y: evt.clientY};
+  return {x:0,y:0};
+}
+
+function getCanvasRelativePoint(clientPt){
+  const rect = mainCanvas.getBoundingClientRect();
+  const x = (clientPt.x - rect.left);
+  const y = (clientPt.y - rect.top);
+  return {x, y};
+}
+
+function clampPointToCanvas(p){
+  const rect = mainCanvas.getBoundingClientRect();
+  p.x = Math.max(0, Math.min(rect.width, p.x));
+  p.y = Math.max(0, Math.min(rect.height, p.y));
+}
+
+// Calculate the output dimensions based on the quad shape
+function updateOutputDimensions() {
+  if (!imgLoaded || points.length !== 4) return;
+  
+  const layout = mainCanvas._imgLayout;
+  if (!layout) return;
+  
+  // Convert canvas points to image coordinates
+  const {dx, dy, drawW, drawH, iw, ih} = layout;
+  function canvasToImageCoords(cx, cy) {
+    const ux = (cx - dx) / drawW;
+    const uy = (cy - dy) / drawH;
+    return {
+      x: Math.max(0, Math.min(1, ux)) * iw,
+      y: Math.max(0, Math.min(1, uy)) * ih
+    };
+  }
+  
+  // Get the image coordinates of all four points
+  const imgPoints = points.map(p => canvasToImageCoords(p.x, p.y));
+  
+  // Calculate the width and height based on the distances between points
+  const width1 = Math.sqrt(
+    Math.pow(imgPoints[1].x - imgPoints[0].x, 2) + 
+    Math.pow(imgPoints[1].y - imgPoints[0].y, 2)
+  );
+  
+  const width2 = Math.sqrt(
+    Math.pow(imgPoints[2].x - imgPoints[3].x, 2) + 
+    Math.pow(imgPoints[2].y - imgPoints[3].y, 2)
+  );
+  
+  const height1 = Math.sqrt(
+    Math.pow(imgPoints[3].x - imgPoints[0].x, 2) + 
+    Math.pow(imgPoints[3].y - imgPoints[0].y, 2)
+  );
+  
+  const height2 = Math.sqrt(
+    Math.pow(imgPoints[2].x - imgPoints[1].x, 2) + 
+    Math.pow(imgPoints[2].y - imgPoints[1].y, 2)
+  );
+  
+  // Average the two width and height measurements
+  const avgWidth = Math.round((width1 + width2) / 2);
+  const avgHeight = Math.round((height1 + height2) / 2);
+  
+  // Update the input fields
+  outWInput.value = avgWidth;
+  outHInput.value = avgHeight;
+}
+
+// Draw image and overlay points
+function render(){
+  // clear
+  ctx.clearRect(0,0,mainCanvas.width, mainCanvas.height);
+  // draw background
+  ctx.fillStyle = '#0b1017';
+  ctx.fillRect(0,0,mainCanvas.width, mainCanvas.height);
+
+  const rect = mainCanvas.getBoundingClientRect();
+
+  if(imgLoaded){
+    // draw image fitted to canvas while keeping aspect ratio and centered
+    // We'll compute a transform such that image fits inside canvas area.
+    const W = rect.width, H = rect.height;
+    const iw = image.width, ih = image.height;
+    const imageAspect = iw/ih;
+    let drawW = W, drawH = W / imageAspect;
+    if(drawH > H){ drawH = H; drawW = H * imageAspect; }
+    const dx = (W - drawW)/2, dy = (H - drawH)/2;
+    // Save layout details for mapping between displayed coords and source image coordinates
+    mainCanvas._imgLayout = {dx,dy,drawW,drawH,iw,ih};
+    ctx.drawImage(image, dx, dy, drawW, drawH);
+  } else {
+    ctx.fillStyle = '#07121a';
+    ctx.fillRect(0,0,rect.width, rect.height);
+    ctx.fillStyle = '#8fa6bb';
+    ctx.font = '14px system-ui,Segoe UI,Roboto';
+    ctx.fillText('Drop image here or use the file picker', 18, 28);
+  }
+
+  // Draw polygon overlay
+  if(points.length === 4){
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for(let i=1;i<4;i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.closePath();
+    ctx.stroke();
+
+    // fill translucent
+    ctx.fillStyle = 'rgba(11,132,255,0.08)';
+    ctx.fill();
+
+    // Draw corner numbers
+    ctx.fillStyle = 'white';
+    ctx.font = '12px system-ui,Segoe UI,Roboto';
+    for(let i=0;i<4;i++){
+      const p = points[i];
+      ctx.fillText((i+1).toString(), p.x + 10, p.y - 8);
+    }
+
+    // Position DOM handles
+    const wrapRect = canvasWrap.getBoundingClientRect();
+    const canvasRect = mainCanvas.getBoundingClientRect();
+    for(let i=0;i<4;i++){
+      const el = points[i].el;
+      const x = canvasRect.left + points[i].x - wrapRect.left;
+      const y = canvasRect.top + points[i].y - wrapRect.top;
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+    }
+  }
+}
+
+// Load image helper
+fileInput.addEventListener('change', (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  if(!f) return;
+  const url = URL.createObjectURL(f);
+  loadImage(url);
+});
+
+// Drag & drop on canvasWrap
+canvasWrap.addEventListener('dragover', (e)=>{ e.preventDefault(); canvasWrap.style.outline='2px dashed rgba(255,255,255,0.06)'; });
+canvasWrap.addEventListener('dragleave', ()=>{ canvasWrap.style.outline=''; });
+canvasWrap.addEventListener('drop', (e)=>{
+  e.preventDefault(); canvasWrap.style.outline='';
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if(f) {
+    const url = URL.createObjectURL(f);
+    loadImage(url);
+  }
+});
+
+// loadImage main
+function loadImage(src){
+  const img = new Image();
+  img.onload = () => {
+    image = img;
+    imgLoaded = true;
+    // fit canvas internal size for nicer display
+    resizeCanvasToWrap();
+    // set default points around image bounds
+    const rect = mainCanvas.getBoundingClientRect();
+    // compute draw area to center points
+    const iw = image.width, ih = image.height;
+    const W = rect.width, H = rect.height;
+    let drawW = W, drawH = W * ih / iw;
+    if(drawH > H){ drawH = H; drawW = H * iw / ih; }
+    const dx = (W - drawW)/2, dy = (H - drawH)/2;
+    // default to the image corners on canvas display coordinates
+    ensurePoints();
+    points[0].x = dx; points[0].y = dy;
+    points[1].x = dx + drawW; points[1].y = dy;
+    points[2].x = dx + drawW; points[2].y = dy + drawH;
+    points[3].x = dx; points[3].y = dy + drawH;
+    render();
+    // Auto-calculate dimensions if enabled
+    if(autoDimensionsCheckbox.checked) {
+      updateOutputDimensions();
+    }
+  };
+  img.onerror = () => {
+    alert('Could not load image.');
+  };
+  img.src = src;
+}
+
+// Fit points to image edges
+fitBtn.addEventListener('click', ()=>{
+  if(!imgLoaded) return;
+  const layout = mainCanvas._imgLayout;
+  if(!layout) return;
+  const dx = layout.dx, dy = layout.dy, drawW = layout.drawW, drawH = layout.drawH;
+  points[0].x = dx; points[0].y = dy;
+  points[1].x = dx + drawW; points[1].y = dy;
+  points[2].x = dx + drawW; points[2].y = dy + drawH;
+  points[3].x = dx; points[3].y = dy + drawH;
+  render();
+  // Auto-calculate dimensions if enabled
+  if(autoDimensionsCheckbox.checked) {
+    updateOutputDimensions();
+  }
+});
+
+// reset; places points in a small square
+resetBtn.addEventListener('click', ()=>{
+  const rect = mainCanvas.getBoundingClientRect();
+  const cx = rect.width/2, cy = rect.height/2;
+  points[0].x = cx-120; points[0].y = cy-120;
+  points[1].x = cx+120; points[1].y = cy-120;
+  points[2].x = cx+120; points[2].y = cy+120;
+  points[3].x = cx-120; points[3].y = cy+120;
+  render();
+  // Auto-calculate dimensions if enabled
+  if(autoDimensionsCheckbox.checked) {
+    updateOutputDimensions();
+  }
+});
+
+// Preview — show transformed result in a new window (quick)
+previewBtn.addEventListener('click', ()=>{
+  if(!imgLoaded) { alert('Load an image first.'); return; }
+  const w = Math.max(1, parseInt(outWInput.value) || 512);
+  const h = Math.max(1, parseInt(outHInput.value) || 512);
+  const out = extractTexture(w,h);
+  if(!out) return;
+  const url = out.toDataURL('image/png');
+  const win = window.open('');
+  win.document.body.style.margin = '0';
+  const im = new Image();
+  im.src = url;
+  win.document.body.appendChild(im);
+});
+
+// Extract & save
+extractBtn.addEventListener('click', ()=>{
+  if(!imgLoaded) { alert('Load an image first.'); return; }
+  const w = Math.max(1, parseInt(outWInput.value) || 512);
+  const h = Math.max(1, parseInt(outHInput.value) || 512);
+  // do extraction
+  const outCanvas = extractTexture(w,h);
+  if(!outCanvas) return;
+  const url = outCanvas.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'texture.png';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+
+// Core: build homography then inverse-sample
+function extractTexture(outW, outH){
+  // need image loaded and points defined
+  if(!imgLoaded) return null;
+
+  // Map from destination rectangle (0..outW,0..outH) to source image coordinates (in original image pixel space).
+  // We currently have points in displayed canvas coords; we must first map them to source image coords.
+  const layout = mainCanvas._imgLayout;
+  if(!layout) { alert('Image layout not ready'); return null; }
+
+  // convert displayed canvas coordinates to image pixel coordinates
+  // displayed top-left image maps to canvas coords (dx,dy), displayed size drawW x drawH maps to image size iw x ih
+  const {dx,dy,drawW,drawH,iw,ih} = layout;
+  // Function to map canvas display coords (cx,cy) -> source image pixel coords (sx,sy)
+  function canvasToImageCoords(cx,cy){
+    // clamp inside drawn area
+    const ux = (cx - dx) / drawW;
+    const uy = (cy - dy) / drawH;
+    return {x: Math.max(0, Math.min(1, ux)) * iw, y: Math.max(0, Math.min(1, uy)) * ih};
+  }
+
+  const src = [];
+  for(let i=0;i<4;i++){
+    const c = canvasToImageCoords(points[i].x, points[i].y);
+    src.push([c.x, c.y]);
+  }
+
+  // destination rectangle (we'll map to [0,0],[outW,0],[outW,outH],[0,outH])
+  const dst = [[0,0],[outW,0],[outW,outH],[0,outH]];
+
+  // compute homography H such that H * [dst] ~ src. We'll compute H mapping dst -> src.
+  const H = computeHomography(dst, src); // 3x3 matrix array
+  if(!H){ alert('Cannot compute transform (degenerate points).'); return null; }
+  // We'll compute inverse mapping from destination pixel to source (so sample src for each dest pixel).
+  // Since H maps dest->src, we can use it directly (apply to [x,y,1] to get source coords).
+  // Create output canvas
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = outW;
+  outCanvas.height = outH;
+  const outCtx = outCanvas.getContext('2d', {alpha:true});
+  // We'll generate ImageData and fill by sampling the source image. Use a temporary canvas for the source image in original pixel size.
+  const tmp = document.createElement('canvas');
+  tmp.width = image.width;
+  tmp.height = image.height;
+  const tctx = tmp.getContext('2d');
+  tctx.drawImage(image, 0, 0, tmp.width, tmp.height);
+  const srcData = tctx.getImageData(0,0,tmp.width,tmp.height);
+  const sdata = srcData.data;
+  const outImg = outCtx.createImageData(outW, outH);
+  const outBuf = outImg.data;
+
+  // Precompute for performance
+  const a00 = H[0][0], a01 = H[0][1], a02 = H[0][2];
+  const a10 = H[1][0], a11 = H[1][1], a12 = H[1][2];
+  const a20 = H[2][0], a21 = H[2][1], a22 = H[2][2];
+
+  // Bilinear sampler helper
+  function sampleBilinear(x, y){
+    // x,y in source image pixel space
+    if(x < 0 || y < 0 || x >= tmp.width - 1 || y >= tmp.height - 1) {
+      // outside: return transparent black or sample clamped
+      const cx = Math.max(0, Math.min(Math.round(x), tmp.width-1));
+      const cy = Math.max(0, Math.min(Math.round(y), tmp.height-1));
+      const idx = (cy*tmp.width + cx)*4;
+      return [sdata[idx], sdata[idx+1], sdata[idx+2], sdata[idx+3]];
+    }
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const dx = x - x0, dy = y - y0;
+    const idx00 = (y0*tmp.width + x0)*4;
+    const idx10 = (y0*tmp.width + (x0+1))*4;
+    const idx01 = ((y0+1)*tmp.width + x0)*4;
+    const idx11 = ((y0+1)*tmp.width + (x0+1))*4;
+    const c00 = [sdata[idx00], sdata[idx00+1], sdata[idx00+2], sdata[idx00+3]];
+    const c10 = [sdata[idx10], sdata[idx10+1], sdata[idx10+2], sdata[idx10+3]];
+    const c01 = [sdata[idx01], sdata[idx01+1], sdata[idx01+2], sdata[idx01+3]];
+    const c11 = [sdata[idx11], sdata[idx11+1], sdata[idx11+2], sdata[idx11+3]];
+    const out = [0,0,0,0];
+    for(let i=0;i<4;i++){
+      const v = c00[i]*(1-dx)*(1-dy) + c10[i]*dx*(1-dy) + c01[i]*(1-dx)*dy + c11[i]*dx*dy;
+      out[i] = v;
+    }
+    return out;
+  }
+
+  // iterate dest pixels
+  for(let y=0;y<outH;y++){
+    for(let x=0;x<outW;x++){
+      // apply H to dest (x,y,1)
+      const numx = a00*x + a01*y + a02;
+      const numy = a10*x + a11*y + a12;
+      const den = a20*x + a21*y + a22;
+      const sx = numx / den;
+      const sy = numy / den;
+      const col = sampleBilinear(sx, sy);
+      const oidx = (y*outW + x)*4;
+      outBuf[oidx] = col[0];
+      outBuf[oidx+1] = col[1];
+      outBuf[oidx+2] = col[2];
+      outBuf[oidx+3] = col[3];
+    }
+  }
+
+  outCtx.putImageData(outImg, 0, 0);
+  return outCanvas;
+}
+
+// Compute 3x3 homography H mapping points src->dst (we want dst->src, but our call uses dst->src)
+function computeHomography(srcPts, dstPts){
+  // srcPts: array of four [x,y] points (input), dstPts: array of four [x,y] points (output)
+  // We'll solve for H (3x3) such that for each pair (src->dst): H * [x y 1]^T ~ [u v 1]^T
+  // Implementation solves linear 8x8 system for 8 unknowns (h0..h7), h8 = 1
+  // Basic DLT formulation.
+  if(srcPts.length !== 4 || dstPts.length !== 4) return null;
+  const A = []; // 8x8
+  const b = [];
+  for(let i=0;i<4;i++){
+    const x = srcPts[i][0], y = srcPts[i][1];
+    const u = dstPts[i][0], v = dstPts[i][1];
+    // eqns:
+    // x*h0 + y*h1 + 1*h2 - u*(x*h6 + y*h7 + 1*h8) = 0
+    // x*h3 + y*h4 + 1*h5 - v*(x*h6 + y*h7 + 1*h8) = 0
+    // set h8 = 1 -> nonlinear but linearize by moving terms
+    // So: x*h0 + y*h1 + h2 - u*x*h6 - u*y*h7 - u*1 = 0
+    // -> [x y 1 0 0 0 -u*x -u*y] * h = u
+    // Wait careful: actually classic arrangement:
+    // [ x y 1 0 0 0 -u*x -u*y ] [h0..h7]^T = u
+    // [ 0 0 0 x y 1 -v*x -v*y ] [h0..h7]^T = v
+    A.push([ x, y, 1, 0, 0, 0, -u*x, -u*y ]);
+    b.push(u);
+    A.push([ 0, 0, 0, x, y, 1, -v*x, -v*y ]);
+    b.push(v);
+  }
+
+  // Solve A*h = b for h (8 unknowns) using Gaussian elimination
+  const h = solveLinearSystem(A, b);
+  if(!h) return null;
+  // build H with h8 = 1
+  const H = [
+    [h[0], h[1], h[2]],
+    [h[3], h[4], h[5]],
+    [h[6], h[7], 1]
+  ];
+  // Note: Our computeHomography maps srcPts -> dstPts. In extractTexture we passed dst (rect) as first arg and src image coords as second arg so H maps destination->source, which we want.
+  return H;
+}
+
+// Simple solver for NxN (A rows x n columns), using Gaussian elimination with partial pivot
+function solveLinearSystem(A, b){
+  const n = A.length; // rows = number of equations (should be 8)
+  const m = A[0].length; // unknowns (8)
+  if(n < m) return null;
+  // create augmented matrix
+  const M = [];
+  for(let i=0;i<n;i++){
+    M[i] = A[i].slice();
+    M[i].push(b[i]);
+  }
+
+  const rows = n, cols = m + 1;
+  let r = 0;
+  for(let c=0;c<m && r<rows; c++){
+    // find pivot row
+    let pivot = r;
+    for(let i=r;i<rows;i++){
+      if(Math.abs(M[i][c]) > Math.abs(M[pivot][c])) pivot = i;
+    }
+    if(Math.abs(M[pivot][c]) < 1e-12) continue; // cannot pivot
+    // swap
+    if(pivot !== r){ const tmp = M[pivot]; M[pivot] = M[r]; M[r] = tmp; }
+    // normalize row r
+    const div = M[r][c];
+    for(let j=c;j<cols;j++) M[r][j] /= div;
+    // eliminate other rows
+    for(let i=0;i<rows;i++){
+      if(i===r) continue;
+      const factor = M[i][c];
+      if(Math.abs(factor) > 0){
+        for(let j=c;j<cols;j++) M[i][j] -= factor*M[r][j];
+      }
+    }
+    r++;
+  }
+
+  // Now extract solution by reading first m columns (assuming exact)
+  const x = new Array(m).fill(0);
+  // Find rows with leading 1s; fallback to least squares if underdetermined (not likely here)
+  for(let i=0;i<m;i++){
+    // find pivot column
+    let pivotCol = -1;
+    for(let j=0;j<m;j++){
+      if(Math.abs(M[i][j]-1) < 1e-9){
+        pivotCol = j; break;
+      }
+    }
+    if(pivotCol !== -1){
+      x[pivotCol] = M[i][cols-1];
+    }
+  }
+  // If any zero values remain (due to different row ordering), attempt direct read for square systems
+  if(x.every(v=>v===0)){
+    // try direct back-substitute for square systems
+    if(rows === m){
+      // upper triangle assumed from elimination
+      for(let i=m-1;i>=0;i--){
+        // find first non-zero coefficient
+        let lead = -1;
+        for(let j=0;j<m;j++){
+          if(Math.abs(M[i][j])>1e-12){ lead=j; break; }
+        }
+        if(lead === -1) continue;
+        let val = M[i][cols-1];
+        for(let j=lead+1;j<m;j++) val -= M[i][j]*x[j];
+        x[lead] = val / M[i][lead];
+      }
+    }
+  }
+  return x;
+}
+
+// Utilities for pointer on canvas itself (dragging blank area to create new point isn't needed)
+mainCanvas.addEventListener('pointerdown', (e) => {
+  // If pointerdown on canvas not on handles, we could add feature to add points, but we keep 4 fixed handles only.
+  // But we'll allow dragging the nearest handle if user taps near corner numeric labels
+});
+
+// initial render
+render();
+
+</script>
+</body>
+</html>
