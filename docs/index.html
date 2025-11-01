@@ -1,62 +1,46 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Kamal's Website</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
-  <style>
-    :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#7dd3fc}
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,'Helvetica Neue',Arial;background:linear-gradient(180deg,#071023 0%, #081426 60%);color:#e6eef6;line-height:1.5}
-    .container{max-width:980px;margin:40px auto;padding:28px}
-    header{display:flex;align-items:center;gap:16px}
-    .logo{width:64px;height:64px;border-radius:12px;background:linear-gradient(135deg,var(--accent),#60a5fa);display:flex;align-items:center;justify-content:center;font-weight:800;color:#05202a;font-size:20px;box-shadow:0 6px 18px rgba(3,7,18,0.6)}
-    h1{margin:0;font-size:28px}
-    p.lead{margin-top:10px;color:var(--muted);max-width:72ch}
-    .card{background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.03);padding:18px;border-radius:12px;margin-top:22px;box-shadow:0 8px 30px rgba(2,6,15,0.6)}
-    .projects{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
-    .project-item{padding:14px;border-radius:10px;background:rgba(255,255,255,0.02);display:flex;align-items:center;justify-content:space-between;gap:12px}
-    .project-info{min-width:0}
-    .project-title{font-weight:600;margin:0}
-    .project-desc{margin:6px 0 0;color:var(--muted);font-size:14px}
-    .btn{display:inline-block;padding:8px 12px;border-radius:8px;text-decoration:none;font-weight:600;border:1px solid rgba(255,255,255,0.06)}
-    .btn-primary{background:linear-gradient(90deg,var(--accent),#60a5fa);color:#012022}
-    footer{margin-top:26px;color:var(--muted);font-size:13px}
-    @media(min-width:720px){.projects{grid-template-columns:repeat(2,1fr)}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kamal's Website</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="container">
-    <header>
-      <div class="logo">K</div>
-      <div>
-        <h1>Kamal's Website</h1>
-        <p class="lead">Welcome. This is Kamal Alkaei's Website. Below are my projects.</p>
-      </div>
-    </header>
+<div class="container">
+<header>
+<div class="logo">K</div>
+<div>
+<h1>Kamal's Website</h1>
+<p class="lead">Welcome. This is Kamal Alkaei's Website. Below are my projects.</p>
+</div>
+</header>
 
-    <section class="card">
-      <h2 style="margin:0 0 8px 0">Projects</h2>
 
-      <div class="projects">
-        <div class="project-item">
-          <div class="project-info">
-            <div class="project-title">Texture Ripper</div>
-            <div class="project-desc">A small utility page for extracting textures.</div>
-          </div>
-          <a class="btn btn-primary" href="textureripper.html">Open</a>
-        </div>
+<section class="card">
+<h2 style="margin:0 0 8px 0">Projects</h2>
 
-      </div>
-    </section>
 
-    <footer>
-      <p>(c) Kamal Alkaei.</p>
-    </footer>
-  </div>
+<div class="projects">
+<div class="project-item">
+<div class="project-info">
+<div class="project-title">Texture Ripper</div>
+<div class="project-desc">A small utility page for extracting textures.</div>
+</div>
+<a class="btn btn-primary" href="textureripper.html">Open</a>
+</div>
+
+
+</div>
+</section>
+
+
+<footer>
+<p>(c) Kamal Alkaei.</p>
+</footer>
+</div>
 </body>
 </html>
